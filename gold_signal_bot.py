@@ -22,12 +22,11 @@ TWELVE_DATA_KEY = "100d92529e674de18d861f050118c7b4"
 
 MODAL_USDT      = 400       # modal kamu dalam USDT
 RISK_PERSEN     = 1.0       # risk per trade (%)
+LOT_SIZE        = 0.01      # lot size tetap
 SYMBOL          = "XAU/USD"
 MIN_SCORE       = 5.0       # minimum score untuk kirim sinyal
 SCAN_MENIT      = 15        # scan setiap X menit
 # ═══════════════════════════════════════════════════════════
-
-RISK_USD = MODAL_USDT * RISK_PERSEN / 100
 
 
 # ───────────────────────────────────────────────────────────
@@ -78,7 +77,7 @@ def fetch_data(interval="1h", bars=200):
         df = df.sort_values("datetime").reset_index(drop=True)
         return df
     except Exception as e:
-        print(f"  ⚠️  Gagal ambil data {interval}: {e}")
+        print(f"  Gagal ambil data {interval}: {e}")
         return None
 
 
@@ -161,7 +160,7 @@ def add_indicators(df):
 
 
 # ───────────────────────────────────────────────────────────
-#  ANALISA SINYAL PER TIMEFRAME
+#  ANALISA SINYAL
 # ───────────────────────────────────────────────────────────
 def analyze(df, tf_type="swing"):
     n  = df.iloc[-1]
@@ -261,13 +260,13 @@ def analyze(df, tf_type="swing"):
     if is_prime_session():
         if bull > bear: bull += 0.5
         elif bear > bull: bear += 0.5
-        info["10. Sesi"] = f"✅ Prime session aktif"
+        info["10. Sesi"] = "✅ Prime session aktif"
     else:
         info["10. Sesi"] = "⚪ Off-session"
 
-    # Tentukan arah
     score = max(bull, bear)
     total = 10.0
+
     if bull > bear and bull >= MIN_SCORE:
         direction = "BUY"
     elif bear > bull and bear >= MIN_SCORE:
@@ -293,28 +292,32 @@ def analyze(df, tf_type="swing"):
     else:
         sl = tp1 = tp2 = p
 
-    sl_d = abs(p - sl)
-    lot  = 0.01
-    rr   = round(abs(tp1 - p) / sl_d, 1) if sl_d > 0 else 0
-    wr   = min(50 + int(score * 4), 82)
+    sl_d      = abs(p - sl)
+    lot       = LOT_SIZE
+    # Risk sebenarnya: jarak SL x lot x 100 (1 lot gold = $100 per $1)
+    risk_real = round(sl_d * lot * 100, 2)
+    rr        = round(abs(tp1 - p) / sl_d, 1) if sl_d > 0 else 0
+    wr        = min(50 + int(score * 4), 82)
 
     return {
-        "direction": direction,
-        "score":     round(score, 1),
-        "max":       total,
-        "bull":      round(bull, 1),
-        "bear":      round(bear, 1),
-        "price":     round(p, 3),
-        "sl":        sl, "tp1": tp1, "tp2": tp2,
-        "sl_d":      round(sl_d, 2),
-        "lot":       lot, "rr": rr, "wr": wr,
-        "atr":       round(atr, 2),
-        "ema20":     round(n["ema20"], 2),
-        "ema50":     round(n["ema50"], 2),
-        "ema200":    round(n["ema200"], 2),
-        "rsi":       round(rsi, 1),
-        "sessions":  sesi_aktif(),
-        "info":      info,
+        "direction":  direction,
+        "score":      round(score, 1),
+        "max":        total,
+        "bull":       round(bull, 1),
+        "bear":       round(bear, 1),
+        "price":      round(p, 3),
+        "sl":         sl, "tp1": tp1, "tp2": tp2,
+        "sl_d":       round(sl_d, 2),
+        "lot":        lot,
+        "risk_real":  risk_real,
+        "rr":         rr, "wr": wr,
+        "atr":        round(atr, 2),
+        "ema20":      round(n["ema20"], 2),
+        "ema50":      round(n["ema50"], 2),
+        "ema200":     round(n["ema200"], 2),
+        "rsi":        round(rsi, 1),
+        "sessions":   sesi_aktif(),
+        "info":       info,
     }
 
 
@@ -334,8 +337,8 @@ def buat_pesan(s, tf_label, tf_type):
     else:
         return None
 
-    bar   = "█" * int(s["score"]) + "░" * max(0, int(s["max"] - s["score"]))
-    tipe  = "⚡ SCALPING" if tf_type == "scalping" else "🌊 SWING"
+    bar  = "█" * int(s["score"]) + "░" * max(0, int(s["max"] - s["score"]))
+    tipe = "⚡ SCALPING" if tf_type == "scalping" else "🌊 SWING"
 
     msg = (
         f"{head}\n"
@@ -355,7 +358,7 @@ def buat_pesan(s, tf_label, tf_type):
         f"├ TP 1      : <b>${s['tp1']:,.3f}</b>\n"
         f"├ TP 2      : <b>${s['tp2']:,.3f}</b>\n"
         f"└ Stop Loss : <b>${s['sl']:,.3f}</b>\n\n"
-        f"💼 Risk: <b>${RISK_USD:.2f}</b> | Lot: <b>{s['lot']}</b> | ATR: ${s['atr']:.2f}\n\n"
+        f"💼 Risk: <b>${s['risk_real']:.2f}</b> | Lot: <b>{s['lot']}</b> | ATR: ${s['atr']:.2f}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔍 <b>HASIL ANALISA:</b>\n"
     )
@@ -367,7 +370,7 @@ def buat_pesan(s, tf_label, tf_type):
         f"📌 EMA20: ${s['ema20']:,.2f} | EMA50: ${s['ema50']:,.2f} | EMA200: ${s['ema200']:,.2f}\n"
         f"📌 RSI: {s['rsi']} | Bull: {s['bull']} | Bear: {s['bear']}\n\n"
         f"⚠️ <i>Eksekusi MANUAL. Selalu pasang SL sebelum entry!\n"
-        f"Max risk 1% per trade. Jangan FOMO.</i>\n"
+        f"Jangan FOMO. Trading konsisten > trading sering.</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return msg
@@ -381,12 +384,12 @@ def kirim_telegram(pesan):
             timeout=12
         )
         if r.status_code == 200:
-            print("  📲 Telegram terkirim ✅")
+            print("  Telegram terkirim")
             return True
-        print(f"  ❌ Telegram error: {r.text[:100]}")
+        print(f"  Telegram error: {r.text[:100]}")
         return False
     except Exception as e:
-        print(f"  ❌ Telegram exception: {e}")
+        print(f"  Telegram exception: {e}")
         return False
 
 
@@ -398,7 +401,7 @@ def buat_pesan_startup():
         f"✅ Pair       : XAU/USD (Gold)\n"
         f"✅ Timeframe  : M15 + H1 (Scalping) | H4 + D1 (Swing)\n"
         f"✅ Modal      : ${MODAL_USDT} USDT\n"
-        f"✅ Risk/trade : ${RISK_USD:.2f} ({RISK_PERSEN}%)\n"
+        f"✅ Lot Size   : {LOT_SIZE}\n"
         f"✅ Min Score  : {MIN_SCORE}/10\n\n"
         f"📊 <b>10 Filter Analisa:</b>\n"
         f"1. EMA Stack 20/50/200\n"
@@ -413,8 +416,7 @@ def buat_pesan_startup():
         f"10. Session Filter\n\n"
         f"⏱️ Scan otomatis setiap {SCAN_MENIT} menit\n"
         f"🏆 Sesi terbaik: London & New York\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱️ Analisa pertama mulai 10 detik..."
+        f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -426,23 +428,23 @@ sinyal_terakhir = {}
 def jalankan_analisa():
     global sinyal_terakhir
     now = wib()
-    print(f"\n{'═'*55}")
-    print(f"  🔍 Analisa: {now.strftime('%d %b %Y %H:%M')} WIB")
-    print(f"{'═'*55}")
+    print(f"\n{'='*50}")
+    print(f"  Analisa: {now.strftime('%d %b %Y %H:%M')} WIB")
+    print(f"{'='*50}")
 
     sinyal_dikirim = 0
 
-    # --- SCALPING: M15 + H1 ---
+    # SCALPING: M15 + H1
     df_m15 = fetch_data("15min", 200)
     df_h1  = fetch_data("1h", 200)
 
     if df_m15 is not None and df_h1 is not None and len(df_m15) > 50 and len(df_h1) > 50:
-        df_m15 = add_indicators(df_m15)
-        df_h1  = add_indicators(df_h1)
+        df_m15  = add_indicators(df_m15)
+        df_h1   = add_indicators(df_h1)
         sig_m15 = analyze(df_m15, "scalping")
         sig_h1  = analyze(df_h1,  "scalping")
 
-        print(f"  ⚡ SCALP M15: {sig_m15['direction']} score={sig_m15['score']} | H1: {sig_h1['direction']} score={sig_h1['score']}")
+        print(f"  SCALP M15: {sig_m15['direction']} score={sig_m15['score']} | H1: {sig_h1['direction']} score={sig_h1['score']}")
 
         if sig_m15["direction"] == sig_h1["direction"] and sig_m15["direction"] != "WAIT":
             sig_gabung = sig_m15.copy()
@@ -454,17 +456,17 @@ def jalankan_analisa():
                     sinyal_terakhir["scalp"] = key
                     sinyal_dikirim += 1
 
-    # --- SWING: H4 + D1 ---
+    # SWING: H4 + D1
     df_h4 = fetch_data("4h", 200)
     df_d1 = fetch_data("1day", 200)
 
     if df_h4 is not None and df_d1 is not None and len(df_h4) > 50 and len(df_d1) > 50:
-        df_h4 = add_indicators(df_h4)
-        df_d1 = add_indicators(df_d1)
+        df_h4  = add_indicators(df_h4)
+        df_d1  = add_indicators(df_d1)
         sig_h4 = analyze(df_h4, "swing")
         sig_d1 = analyze(df_d1, "swing")
 
-        print(f"  🌊 SWING  H4: {sig_h4['direction']} score={sig_h4['score']} | D1: {sig_d1['direction']} score={sig_d1['score']}")
+        print(f"  SWING  H4: {sig_h4['direction']} score={sig_h4['score']} | D1: {sig_d1['direction']} score={sig_d1['score']}")
 
         if sig_h4["direction"] == sig_d1["direction"] and sig_h4["direction"] != "WAIT":
             sig_gabung = sig_h4.copy()
@@ -477,17 +479,17 @@ def jalankan_analisa():
                     sinyal_dikirim += 1
 
     if sinyal_dikirim == 0:
-        print(f"  ⏸️  Tidak ada sinyal valid saat ini.")
+        print(f"  Tidak ada sinyal valid saat ini.")
 
 
 # ───────────────────────────────────────────────────────────
 #  START
 # ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("╔══════════════════════════════════════════════════╗")
-    print("║      GOLD SIGNAL BOT PRO v2 — XAU/USD           ║")
-    print(f"║  Modal: ${MODAL_USDT} | Risk: {RISK_PERSEN}% = ${RISK_USD}/trade          ║")
-    print("╚══════════════════════════════════════════════════╝\n")
+    print("="*50)
+    print("  GOLD SIGNAL BOT PRO v2 — XAU/USD")
+    print(f"  Lot: {LOT_SIZE} | Min Score: {MIN_SCORE}/10")
+    print("="*50)
 
     kirim_telegram(buat_pesan_startup())
     time.sleep(10)
@@ -495,8 +497,8 @@ if __name__ == "__main__":
 
     schedule.every(SCAN_MENIT).minutes.do(jalankan_analisa)
 
-    print(f"\n✅ Bot berjalan! Scan setiap {SCAN_MENIT} menit.")
-    print(f"   Tekan Ctrl+C untuk berhenti.\n")
+    print(f"\nBot berjalan! Scan setiap {SCAN_MENIT} menit.")
+    print("Tekan Ctrl+C untuk berhenti.\n")
 
     while True:
         schedule.run_pending()
