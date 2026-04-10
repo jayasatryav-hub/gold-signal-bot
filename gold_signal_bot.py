@@ -213,19 +213,36 @@ def get_candle_signal(df):
     return "NONE", "Tidak ada konfirmasi candle"
 
 def get_dxy_bias():
+    """Ambil data DXY dari Yahoo Finance (gratis, tidak perlu API key)"""
     try:
-        df = fetch_data("DX/Y", "1h", 50)
-        if df is None:
+        import urllib.request, json as _json
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1h&range=3d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read())
+        closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        closes = [c for c in closes if c is not None]
+        if len(closes) < 20:
             return "UNKNOWN"
-        ema20 = df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
-        price = df["close"].iloc[-1]
-        if price > ema20 > ema50:
+        import numpy as np
+        closes_arr = np.array(closes)
+        # EMA sederhana
+        def ema_calc(arr, n):
+            k = 2.0 / (n + 1)
+            result = arr[0]
+            for val in arr[1:]:
+                result = val * k + result * (1 - k)
+            return result
+        ema20 = ema_calc(closes_arr[-20:], 20)
+        ema50 = ema_calc(closes_arr[-min(50,len(closes_arr)):], min(50,len(closes_arr)))
+        price = closes_arr[-1]
+        if price > ema20 and ema20 > ema50:
             return "NAIK"
-        elif price < ema20 < ema50:
+        elif price < ema20 and ema20 < ema50:
             return "TURUN"
         return "SIDEWAYS"
-    except:
+    except Exception as e:
+        print("  DXY Yahoo error: {}".format(e))
         return "UNKNOWN"
 
 def analyze(df, tf_type, dxy):
