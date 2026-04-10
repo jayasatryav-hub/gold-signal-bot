@@ -293,7 +293,7 @@ def analyze(df, tf_type, dxy):
         sl = tp1 = tp2 = price
 
     sl_d      = abs(price - sl)
-    risk_real = round(sl_d * LOT_SIZE * 100, 2)
+    risk_real = round(sl_d, 2)  # 1 poin = $1 untuk 0.01 lot di Bybit TradFi
     rr        = round(abs(tp1 - price) / sl_d, 1) if sl_d > 0 else 0
 
     if direction != "WAIT" and rr < MIN_RR:
