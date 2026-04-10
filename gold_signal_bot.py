@@ -500,6 +500,28 @@ def analyze(df, tf_type, dxy):
         skip_reason = f"RR 1:{rr} di bawah minimum 1:{MIN_RR}"
         direction   = "WAIT"
 
+    # Hitung score dari kualitas komponen (max 10)
+    score = 0.0
+    if direction != "WAIT":
+        # Komponen 1: Structure (max 3 poin)
+        score += 3.0  # structure sudah pasti jelas kalau sampai sini
+
+        # Komponen 2: Area S/R (max 3 poin) - makin banyak reject makin tinggi
+        if area_ok:
+            score += 3.0
+
+        # Komponen 3: Candle (max 2 poin)
+        if "kuat" in candle_desc:
+            score += 2.0
+        elif candle_dir != "NONE":
+            score += 1.5
+
+        # Filter (max 2 poin)
+        score += filters_ok * 1.0
+
+    score = round(min(score, 10.0), 1)
+    wr    = min(50 + int(score * 3.5), 85)
+
     return {
         "direction":   direction,
         "price":       round(price, 3),
@@ -522,6 +544,8 @@ def analyze(df, tf_type, dxy):
         "dxy_desc":    dxy_desc,
         "filters_ok":  filters_ok,
         "skip_reason": skip_reason,
+        "score":       score,
+        "wr":          wr,
     }
 
 
@@ -533,64 +557,61 @@ def buat_pesan(s, tf_label, tf_type):
     now = wib()
 
     if d == "BUY":
-        head = "🟢🟢🟢 <b>SINYAL BUY — GOLD XAU/USD</b> 🟢🟢🟢"
-        icon = "▲"
+        icon = "BUY"
+        emoji = "GREEN"
     elif d == "SELL":
-        head = "🔴🔴🔴 <b>SINYAL SELL — GOLD XAU/USD</b> 🔴🔴🔴"
-        icon = "▼"
+        icon = "SELL"
+        emoji = "RED"
     else:
         return None
 
-    tipe     = "⚡ SCALPING" if tf_type == "scalping" else "🌊 SWING"
-    sess_str = "✅ Aktif" if s["session_ok"] else "⚪ Off-session"
+    tipe     = "SCALPING" if tf_type == "scalping" else "SWING"
+    sess_str = "Aktif" if s["session_ok"] else "Off-session"
+    score    = s.get("score", 0)
+    wr       = s.get("wr", 0)
 
-    # Hitung statistik
     stats = get_trade_summary()
-    stats_str = ""
+    track = ""
     if stats and stats["closed"] > 0:
-        stats_str = (
-            f"\n📈 <b>Track Record:</b> "
-            f"{stats['wins']}W/{stats['losses']}L/{stats['be']}BE "
-            f"| WR: {stats['wr']}% "
-            f"({stats['closed']} trade)\n"
-        )
+        track = f"Track Record: {stats['wins']}W/{stats['losses']}L/{stats['be']}BE | WR: {stats['wr']}%\n"
 
-    msg = (
-        f"{head}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ {now.strftime('%d %b %Y  %H:%M')} WIB\n"
-        f"{tipe} | TF: {tf_label}\n"
-        f"📡 Sesi: {' | '.join(s['sessions'])}\n"
-        f"{stats_str}"
-        f"\n💰 Harga : <b>${s['price']:,.3f}</b>\n"
-        f"{icon} Arah  : <b>{d}</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ <b>3 KOMPONEN WAJIB:</b>\n"
-        f"1️⃣ Structure : ✅ {s['structure']}\n"
-        f"2️⃣ Zona S/R  : ✅ {s['area_desc']}\n"
-        f"3️⃣ Candle    : ✅ {s['candle_desc']}\n\n"
-        f"🔰 <b>FILTER ({s['filters_ok']}/2):</b>\n"
-        f"4️⃣ Session : {sess_str}\n"
-        f"5️⃣ DXY     : {s['dxy_desc']}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>RENCANA ENTRY:</b>\n"
-        f"- Entry     : <b>${s['price']:,.3f}</b>\n"
-        f"- TP 1      : <b>${s['tp1']:,.3f}</b>\n"
-        f"- TP 2      : <b>${s['tp2']:,.3f}</b>\n"
-        f"- Stop Loss : <b>${s['sl']:,.3f}</b>\n\n"
-        f"💼 Risk: <b>${s['risk_real']:.2f}</b> | "
-        f"Lot: <b>{s['lot']}</b> | "
-        f"RR: <b>1:{s['rr']}</b> | "
-        f"ATR: ${s['atr']:.2f}\n"
-        f"📊 RSI: {s['rsi']}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ <i>Cek Investing.com sebelum entry!\n"
-        f"Skip jika ada berita merah dalam 1 jam.\n"
-        f"Selalu pasang SL. Jangan FOMO.</i>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
+    msg  = f"{'==='*8}\n"
+    msg += f"SINYAL {icon} - GOLD XAU/USD\n"
+    msg += f"{'==='*8}\n"
+    msg += f"{now.strftime('%d %b %Y  %H:%M')} WIB\n"
+    msg += f"{tipe} | TF: {tf_label}\n"
+    msg += f"Sesi: {chr(32).join(s['sessions'])}\n"
+    if track:
+        msg += track
+    msg += f"\n"
+    msg += f"Harga  : ${s['price']:,.3f}\n"
+    msg += f"Arah   : {d}\n"
+    msg += f"Score  : {score}/10\n"
+    msg += f"Est WR : {wr}%\n"
+    msg += f"\n"
+    msg += f"=== 3 KOMPONEN WAJIB ===\n"
+    msg += f"1. Structure : {s['structure']}\n"
+    msg += f"2. Zona S/R  : {s['area_desc']}\n"
+    msg += f"3. Candle    : {s['candle_desc']}\n"
+    msg += f"\n"
+    msg += f"=== FILTER ({s['filters_ok']}/2) ===\n"
+    msg += f"4. Session : {sess_str}\n"
+    msg += f"5. DXY     : {s['dxy_desc']}\n"
+    msg += f"\n"
+    msg += f"=== RENCANA ENTRY ===\n"
+    msg += f"Entry     : ${s['price']:,.3f}\n"
+    msg += f"TP 1      : ${s['tp1']:,.3f}\n"
+    msg += f"TP 2      : ${s['tp2']:,.3f}\n"
+    msg += f"Stop Loss : ${s['sl']:,.3f}\n"
+    msg += f"\n"
+    msg += f"Risk: ${s['risk_real']:.2f} | Lot: {s['lot']} | RR: 1:{s['rr']} | ATR: ${s['atr']:.2f}\n"
+    msg += f"RSI: {s['rsi']}\n"
+    msg += f"\n"
+    msg += f"Cek Investing.com sebelum entry!\n"
+    msg += f"Entry jika Score 8+ dan WR 75%+\n"
+    msg += f"Skip jika ada berita merah.\n"
+    msg += f"Selalu pasang SL. Jangan FOMO."
     return msg
-
 
 def kirim_telegram(pesan):
     try:
