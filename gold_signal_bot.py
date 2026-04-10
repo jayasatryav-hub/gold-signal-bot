@@ -263,10 +263,7 @@ def analyze(df, tf_type, dxy):
                 area_ok = True
                 if session_ok: filters_ok += 1
                 if dxy_buy:    filters_ok += 1
-                if filters_ok >= 1:
-                    direction = "BUY"
-                else:
-                    skip_reason = "Filter tidak terpenuhi"
+                direction = "BUY"  # Filter jadi info tambahan, bukan syarat wajib
         elif structure == "BEARISH" and candle_dir == "SELL":
             in_zone, area_desc = is_in_sr_zone(price, valid_supports, valid_resistances, "SELL")
             if not in_zone:
@@ -275,10 +272,7 @@ def analyze(df, tf_type, dxy):
                 area_ok = True
                 if session_ok: filters_ok += 1
                 if dxy_sell:   filters_ok += 1
-                if filters_ok >= 1:
-                    direction = "SELL"
-                else:
-                    skip_reason = "Filter tidak terpenuhi"
+                direction = "SELL"  # Filter jadi info tambahan, bukan syarat wajib
         else:
             skip_reason = "Structure tidak sesuai candle"
 
