@@ -235,12 +235,12 @@ def is_in_sr_zone(price, valid_supports, valid_resistances, direction):
     if direction == "BUY":
         for sup in valid_supports:
             if sup["zone_low"] <= price <= sup["zone_high"]:
-                return True, "Support ${:,.2f}-${:,.2f} ({}x reject){})".format(
+                return True, "Support ${:,.2f}-${:,.2f} ({}x reject){}".format(
                     sup["zone_low"], sup["zone_high"], sup["rejects"], sup.get("label",""))
     elif direction == "SELL":
         for res in valid_resistances:
             if res["zone_low"] <= price <= res["zone_high"]:
-                return True, "Resistance ${:,.2f}-${:,.2f} ({}x reject){})".format(
+                return True, "Resistance ${:,.2f}-${:,.2f} ({}x reject){}".format(
                     res["zone_low"], res["zone_high"], res["rejects"], res.get("label",""))
     return False, "Di luar zona S/R"
 
