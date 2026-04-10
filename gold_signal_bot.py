@@ -513,6 +513,111 @@ def jalankan_analisa():
     if sinyal_dikirim == 0:
         print("  Tidak ada sinyal valid.")
 
+
+def check_commands():
+    """Cek command dari Telegram"""
+    try:
+        r = requests.get(
+            "https://api.telegram.org/bot{}/getUpdates".format(TELEGRAM_TOKEN),
+            timeout=10
+        )
+        data = r.json()
+        if not data.get("ok"):
+            return []
+        return data.get("result", [])
+    except:
+        return []
+
+def set_offset(offset):
+    try:
+        requests.get(
+            "https://api.telegram.org/bot{}/getUpdates".format(TELEGRAM_TOKEN),
+            params={"offset": offset}, timeout=10
+        )
+    except:
+        pass
+
+def handle_stats():
+    stats = get_trade_summary()
+    if not stats:
+        msg = "Belum ada sinyal yang tercatat."
+    elif stats["total"] == 0:
+        msg = "Belum ada sinyal yang tercatat."
+    else:
+        msg  = "=== STATISTIK BOT ===\n"
+        msg += "Total sinyal : {}\n".format(stats["total"])
+        msg += "Pending      : {}\n".format(stats["pending"])
+        msg += "Closed       : {}\n".format(stats["closed"])
+        msg += "\n"
+        if stats["closed"] > 0:
+            msg += "Win    : {}\n".format(stats["wins"])
+            msg += "Loss   : {}\n".format(stats["losses"])
+            msg += "BE     : {}\n".format(stats["be"])
+            msg += "WR     : {}%\n".format(stats["wr"])
+        else:
+            msg += "Belum ada trade yang selesai (semua PENDING)\n"
+        msg += "\n"
+        msg += "Update hasil trade di file trade_log.json\n"
+        msg += "Ganti PENDING ke WIN_TP1/WIN_TP2/LOSS/BE"
+    kirim_telegram(msg)
+
+def handle_log():
+    try:
+        if not os.path.exists(LOG_FILE):
+            kirim_telegram("Belum ada sinyal yang tercatat.")
+            return
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+        if not logs:
+            kirim_telegram("Belum ada sinyal yang tercatat.")
+            return
+        recent = logs[-10:]
+        msg  = "=== 10 SINYAL TERAKHIR ===\n\n"
+        for l in reversed(recent):
+            msg += "#{} | {} | {} | {} | Score {} | {}\n".format(
+                l["id"], l["waktu"], l["arah"], l["tf"],
+                l.get("score", "-"), l["result"]
+            )
+        kirim_telegram(msg)
+    except Exception as e:
+        kirim_telegram("Error baca log: {}".format(e))
+
+last_update_id = 0
+
+def process_commands():
+    global last_update_id
+    updates = check_commands()
+    for update in updates:
+        uid = update.get("update_id", 0)
+        if uid <= last_update_id:
+            continue
+        last_update_id = uid
+        message = update.get("message", {})
+        text    = message.get("text", "").strip().lower()
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        if chat_id != str(CHAT_ID):
+            continue
+        if text == "/stats":
+            handle_stats()
+        elif text == "/log":
+            handle_log()
+        elif text == "/start":
+            kirim_telegram(buat_pesan_startup())
+        elif text == "/help":
+            msg  = "=== COMMAND BOT ===\n"
+            msg += "/stats - Statistik performa bot\n"
+            msg += "/log   - 10 sinyal terakhir\n"
+            msg += "/start - Info bot\n"
+            msg += "/help  - Bantuan\n"
+            msg += "\n"
+            msg += "Update hasil trade:\n"
+            msg += "Buka trade_log.json di Railway\n"
+            msg += "Ganti PENDING ke:\n"
+            msg += "WIN_TP1 / WIN_TP2 / LOSS / BE"
+            kirim_telegram(msg)
+        set_offset(last_update_id + 1)
+
+
 if __name__ == "__main__":
     print("="*50)
     print("  GOLD SIGNAL BOT PRO v7")
@@ -525,4 +630,5 @@ if __name__ == "__main__":
     print("\nBot berjalan! Scan setiap {} menit.".format(SCAN_MENIT))
     while True:
         schedule.run_pending()
-        time.sleep(30)
+        process_commands()
+        time.sleep(10)
