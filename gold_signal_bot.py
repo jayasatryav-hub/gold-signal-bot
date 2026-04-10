@@ -610,50 +610,42 @@ def kirim_telegram(pesan):
 
 
 def buat_pesan_startup():
-    stats     = get_trade_summary()
+    stats = get_trade_summary()
     stats_str = ""
     if stats:
         if stats["closed"] > 0:
-            stats_str = (
-                f"\n📈 <b>Track Record:</b> "
-                f"{stats['wins']}W/{stats['losses']}L/{stats['be']}BE "
-                f"| WR: {stats['wr']}% | Total: {stats['total']} sinyal\n"
-            )
+            stats_str = f"Track Record: {stats['wins']}W/{stats['losses']}L/{stats['be']}BE | WR: {stats['wr']}% | Total: {stats['total']} sinyal"
         else:
-            stats_str = f"\n📊 Total sinyal logged: {stats['total']} (belum ada hasil)\n"
+            stats_str = f"Total sinyal logged: {stats['total']} (belum ada hasil)"
 
-    return (
-        f"🤖 <b>GOLD SIGNAL BOT PRO v7 FINAL</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ Simple | Objective | Non-Redundant\n"
-        f"✅ Pair : XAU/USD\n"
-        f"✅ TF   : M15+H1 (Scalp) | H4+D1 (Swing)\n"
-        f"✅ Lot  : {LOT_SIZE} | Min RR: 1:{MIN_RR}\n"
-        f"{stats_str}\n"
-        f"📊 <b>Sistem Entry:</b>\n\n"
-        f"<b>WAJIB 3/3:</b>\n"
-        f"1. Market Structure (HH+HL / LH+LL)\n"
-        f"2. Harga dalam zona S/R (±0.3%)\n"
-        f"3. Pin Bar / Engulfing (definisi ketat)\n\n"
-        f"<b>FILTER minimal 1/2:</b>\n"
-        f"4. Session London/NY aktif\n"
-        f"5. DXY mendukung arah\n\n"
-        f"<b>NO TRADE jika:</b>\n"
-        f"❌ Structure tidak jelas\n"
-        f"❌ Harga di luar zona S/R\n"
-        f"❌ Tidak ada candle konfirmasi\n"
-        f"❌ Candle terlalu besar (late entry)\n"
-        f"❌ RR < 1:{MIN_RR}\n\n"
-        f"⏱️ Scan setiap {SCAN_MENIT} menit\n"
-        f"📝 Semua sinyal di-log otomatis\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-
-
-# ───────────────────────────────────────────────────────────
-#  MAIN LOOP
-# ───────────────────────────────────────────────────────────
-sinyal_terakhir = {}
+    msg = "GOLD SIGNAL BOT PRO v7 FINAL\n"
+    msg += "========================\n"
+    msg += "Simple | Objective | Non-Redundant\n"
+    msg += f"Pair: XAU/USD | Lot: {LOT_SIZE} | Min RR: 1:{MIN_RR}\n"
+    msg += f"TF: M15+H1 (Scalp) dan H4+D1 (Swing)\n"
+    if stats_str:
+        msg += stats_str + "\n"
+    msg += "\n"
+    msg += "WAJIB 3/3:\n"
+    msg += "1. Market Structure (HH+HL atau LH+LL)\n"
+    msg += "2. Harga dalam zona S/R (0.3% tolerance)\n"
+    msg += "3. Pin Bar atau Engulfing (definisi ketat)\n"
+    msg += "\n"
+    msg += "FILTER minimal 1/2:\n"
+    msg += "4. Session London/NY aktif\n"
+    msg += "5. DXY mendukung arah\n"
+    msg += "\n"
+    msg += "NO TRADE jika:\n"
+    msg += "- Structure tidak jelas\n"
+    msg += "- Harga di luar zona S/R\n"
+    msg += "- Tidak ada candle konfirmasi\n"
+    msg += "- Candle terlalu besar (late entry)\n"
+    msg += f"- RR kurang dari 1:{MIN_RR}\n"
+    msg += "\n"
+    msg += f"Scan setiap {SCAN_MENIT} menit\n"
+    msg += "Semua sinyal di-log otomatis\n"
+    msg += "========================"
+    return msg
 
 def jalankan_analisa():
     global sinyal_terakhir
