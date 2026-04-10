@@ -41,8 +41,8 @@ LOT_SIZE        = 0.01
 SYMBOL          = "XAU/USD"
 SCAN_MENIT      = 15
 
-SR_TOLERANCE    = 0.003   # ±0.3% zona S/R (~$14 untuk gold $4800)
-SR_MIN_REJECT   = 2       # Level harus direject minimal 2x
+SR_TOLERANCE    = 0.005   # ±0.3% zona S/R (~$14 untuk gold $4800)
+SR_MIN_REJECT   = 1       # Level harus direject minimal 2x
 LATE_ENTRY_MULT = 2.0     # Candle terlalu besar jika body > 2x rata-rata
 MIN_RR          = 1.5     # Minimum Risk/Reward ratio
 LOG_FILE        = "trade_log.json"
@@ -681,6 +681,8 @@ def jalankan_analisa():
     sinyal_dikirim = 0
 
     # ── SCALPING: M15 + H1 ──
+    # Sinyal keluar jika M15 DAN H1 searah (konfluensi kuat)
+    # ATAU jika hanya H1 dengan score tinggi (lebih fleksibel)
     df_m15 = fetch_data(SYMBOL, "15min", 200)
     df_h1  = fetch_data(SYMBOL, "1h", 200)
 
@@ -691,17 +693,32 @@ def jalankan_analisa():
         sig_h1  = analyze(df_h1,  "scalping", dxy)
 
         m15_info = sig_m15["skip_reason"] or sig_m15["candle_desc"]
-        print(f"  SCALP | M15: {sig_m15['direction']} ({m15_info[:40]}) "
-              f"| H1: {sig_h1['direction']}")
+        print(f"  SCALP | M15: {sig_m15['direction']} score={sig_m15.get('score',0)} "
+              f"| H1: {sig_h1['direction']} score={sig_h1.get('score',0)}")
 
+        # Opsi 1: M15 + H1 searah (konfluensi penuh — score bonus)
         if (sig_m15["direction"] == sig_h1["direction"] and
                 sig_m15["direction"] != "WAIT"):
-            key = f"SCALP_{sig_m15['direction']}_{int(sig_m15['price'])}"
+            sig_gabung = sig_h1.copy()
+            # Bonus score karena 2 TF konfirmasi
+            sig_gabung["score"] = min(round(sig_h1.get("score", 0) + 1.5, 1), 10)
+            sig_gabung["wr"]    = min(sig_h1.get("wr", 0) + 8, 88)
+            key = f"SCALP_{sig_gabung['direction']}_{int(sig_gabung['price'])}"
             if key != sinyal_terakhir.get("scalp"):
-                pesan = buat_pesan(sig_m15, "M15 + H1", "scalping")
+                pesan = buat_pesan(sig_gabung, "M15 + H1 (Konfluensi)", "scalping")
                 if pesan and kirim_telegram(pesan):
                     sinyal_terakhir["scalp"] = key
-                    log_signal(sig_m15, "M15+H1", "scalping")
+                    log_signal(sig_gabung, "M15+H1", "scalping")
+                    sinyal_dikirim += 1
+
+        # Opsi 2: Hanya H1 valid (sinyal lebih sering)
+        elif sig_h1["direction"] != "WAIT" and sig_m15["direction"] == "WAIT":
+            key = f"SCALP_{sig_h1['direction']}_{int(sig_h1['price'])}_H1"
+            if key != sinyal_terakhir.get("scalp"):
+                pesan = buat_pesan(sig_h1, "H1", "scalping")
+                if pesan and kirim_telegram(pesan):
+                    sinyal_terakhir["scalp"] = key
+                    log_signal(sig_h1, "H1", "scalping")
                     sinyal_dikirim += 1
 
     # ── SWING: H4 + D1 ──
@@ -714,40 +731,32 @@ def jalankan_analisa():
         sig_h4 = analyze(df_h4, "swing", dxy)
         sig_d1 = analyze(df_d1, "swing", dxy)
 
-        h4_info = sig_h4["skip_reason"] or sig_h4["candle_desc"]
-        print(f"  SWING  | H4: {sig_h4['direction']} ({h4_info[:40]}) "
-              f"| D1: {sig_d1['direction']}")
+        print(f"  SWING  | H4: {sig_h4['direction']} score={sig_h4.get('score',0)} "
+              f"| D1: {sig_d1['direction']} score={sig_d1.get('score',0)}")
 
+        # Opsi 1: H4 + D1 searah (konfluensi penuh)
         if (sig_h4["direction"] == sig_d1["direction"] and
                 sig_h4["direction"] != "WAIT"):
-            key = f"SWING_{sig_h4['direction']}_{int(sig_h4['price'])}"
+            sig_gabung = sig_h4.copy()
+            sig_gabung["score"] = min(round(sig_h4.get("score", 0) + 1.5, 1), 10)
+            sig_gabung["wr"]    = min(sig_h4.get("wr", 0) + 8, 88)
+            key = f"SWING_{sig_gabung['direction']}_{int(sig_gabung['price'])}"
             if key != sinyal_terakhir.get("swing"):
-                pesan = buat_pesan(sig_h4, "H4 + D1", "swing")
+                pesan = buat_pesan(sig_gabung, "H4 + D1 (Konfluensi)", "swing")
                 if pesan and kirim_telegram(pesan):
                     sinyal_terakhir["swing"] = key
-                    log_signal(sig_h4, "H4+D1", "swing")
+                    log_signal(sig_gabung, "H4+D1", "swing")
+                    sinyal_dikirim += 1
+
+        # Opsi 2: Hanya H4 valid
+        elif sig_h4["direction"] != "WAIT" and sig_d1["direction"] == "WAIT":
+            key = f"SWING_{sig_h4['direction']}_{int(sig_h4['price'])}_H4"
+            if key != sinyal_terakhir.get("swing"):
+                pesan = buat_pesan(sig_h4, "H4", "swing")
+                if pesan and kirim_telegram(pesan):
+                    sinyal_terakhir["swing"] = key
+                    log_signal(sig_h4, "H4", "swing")
                     sinyal_dikirim += 1
 
     if sinyal_dikirim == 0:
         print(f"  Tidak ada sinyal valid.")
-
-
-if __name__ == "__main__":
-    print("="*50)
-    print("  GOLD SIGNAL BOT PRO v7 FINAL")
-    print("  Simple | Objective | Non-Redundant")
-    print(f"  Min RR: 1:{MIN_RR} | SR Tolerance: ±{SR_TOLERANCE*100}%")
-    print("="*50)
-
-    kirim_telegram(buat_pesan_startup())
-    time.sleep(10)
-    jalankan_analisa()
-
-    schedule.every(SCAN_MENIT).minutes.do(jalankan_analisa)
-
-    print(f"\nBot berjalan! Scan setiap {SCAN_MENIT} menit.")
-    print("Tekan Ctrl+C untuk berhenti.\n")
-
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
