@@ -136,6 +136,30 @@ def get_market_structure(df):
         return "BEARISH"
     return "NETRAL"
 
+def get_round_numbers(price):
+    """Level psikologis round number - sangat dihormati gold"""
+    levels = []
+    # Round number setiap $50
+    base = round(price / 50) * 50
+    for i in range(-4, 5):
+        levels.append(base + i * 50)
+    return levels
+
+def get_prev_day_levels(df):
+    """Previous day high dan low - level institusi penting"""
+    try:
+        # Ambil candle kemarin (daily)
+        daily = df.copy()
+        daily["date"] = daily["datetime"].str[:10] if "datetime" in daily.columns else ""
+        # Ambil 2 hari terakhir
+        dates = daily["date"].unique()
+        if len(dates) >= 2:
+            prev_day = daily[daily["date"] == dates[-2]]
+            return prev_day["high"].max(), prev_day["low"].min()
+    except:
+        pass
+    return None, None
+
 def get_validated_sr(df, lookback=100):
     recent      = df.tail(lookback)
     highs       = recent["high"].values
@@ -143,13 +167,32 @@ def get_validated_sr(df, lookback=100):
     price       = df["close"].iloc[-1]
     tol_cluster = price * 0.005
     all_levels  = []
+
+    # 1. Swing high/low
     for i in range(2, len(highs)-2):
         if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
             all_levels.append(highs[i])
         if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
             all_levels.append(lows[i])
+
+    # 2. Round numbers (tambah 2x ke list agar dapat bobot lebih tinggi)
+    round_nums = get_round_numbers(price)
+    for rn in round_nums:
+        all_levels.append(rn)
+        all_levels.append(rn)  # bobot 2x
+
+    # 3. Previous day high/low (tambah 2x agar dapat bobot lebih tinggi)
+    pdh, pdl = get_prev_day_levels(df)
+    if pdh:
+        all_levels.append(pdh)
+        all_levels.append(pdh)
+    if pdl:
+        all_levels.append(pdl)
+        all_levels.append(pdl)
+
     if not all_levels:
         return [], []
+
     all_levels.sort()
     clusters = []
     current  = [all_levels[0]]
@@ -160,6 +203,7 @@ def get_validated_sr(df, lookback=100):
             clusters.append(current)
             current = [level]
     clusters.append(current)
+
     valid_supports    = []
     valid_resistances = []
     for cluster in clusters:
@@ -168,7 +212,19 @@ def get_validated_sr(df, lookback=100):
             count     = len(cluster)
             zone_low  = round(avg * (1 - SR_TOLERANCE), 2)
             zone_high = round(avg * (1 + SR_TOLERANCE), 2)
-            entry = {"level": round(avg, 2), "zone_low": zone_low, "zone_high": zone_high, "rejects": count}
+            # Cek apakah level ini round number atau prev day
+            is_round = any(abs(avg - rn) < 5 for rn in get_round_numbers(price))
+            is_prev  = (pdh and abs(avg - pdh) < 5) or (pdl and abs(avg - pdl) < 5)
+            label = ""
+            if is_round: label = " [Round Number]"
+            elif is_prev: label = " [Prev Day H/L]"
+            entry = {
+                "level":    round(avg, 2),
+                "zone_low": zone_low,
+                "zone_high":zone_high,
+                "rejects":  count,
+                "label":    label
+            }
             if avg < price:
                 valid_supports.append(entry)
             else:
@@ -179,37 +235,46 @@ def is_in_sr_zone(price, valid_supports, valid_resistances, direction):
     if direction == "BUY":
         for sup in valid_supports:
             if sup["zone_low"] <= price <= sup["zone_high"]:
-                return True, "Support ${:,.2f}-${:,.2f} ({}x reject)".format(sup["zone_low"], sup["zone_high"], sup["rejects"])
+                return True, "Support ${:,.2f}-${:,.2f} ({}x reject){})".format(
+                    sup["zone_low"], sup["zone_high"], sup["rejects"], sup.get("label",""))
     elif direction == "SELL":
         for res in valid_resistances:
             if res["zone_low"] <= price <= res["zone_high"]:
-                return True, "Resistance ${:,.2f}-${:,.2f} ({}x reject)".format(res["zone_low"], res["zone_high"], res["rejects"])
+                return True, "Resistance ${:,.2f}-${:,.2f} ({}x reject){})".format(
+                    res["zone_low"], res["zone_high"], res["rejects"], res.get("label",""))
     return False, "Di luar zona S/R"
 
 def get_candle_signal(df):
     last      = df.iloc[-1]
     prev      = df.iloc[-2]
     avg_body  = df["close"].sub(df["open"]).abs().tail(20).mean()
+    avg_vol   = df["volume"].tail(20).mean()
     body      = abs(last["close"] - last["open"])
     rang      = last["high"] - last["low"]
     lwk       = min(last["close"], last["open"]) - last["low"]
     uwk       = last["high"] - max(last["close"], last["open"])
     prev_body = abs(prev["close"] - prev["open"])
+    vol_ratio = last["volume"] / avg_vol if avg_vol > 0 else 1.0
+
+    # Volume konfirmasi - tambah label kalau volume spike
+    vol_label = " + Vol Spike {:.1f}x".format(vol_ratio) if vol_ratio >= 1.5 else ""
+
     if body > avg_body * LATE_ENTRY_MULT:
         return "NONE", "Late entry (candle {:.1f}x avg)".format(body/avg_body)
     if rang == 0 or body == 0:
         return "NONE", "Tidak ada pergerakan"
     body_ratio = body / rang
+
     if lwk >= body * 2.0 and uwk <= body * 0.5 and body_ratio < 0.4:
         conf = "kuat" if lwk >= body * 3.0 else "normal"
-        return "BUY", "Pin Bar Bullish {} (wick {:.1f}x)".format(conf, lwk/body)
+        return "BUY", "Pin Bar Bullish {}{}(wick {:.1f}x)".format(conf, vol_label, lwk/body)
     if uwk >= body * 2.0 and lwk <= body * 0.5 and body_ratio < 0.4:
         conf = "kuat" if uwk >= body * 3.0 else "normal"
-        return "SELL", "Pin Bar Bearish {} (wick {:.1f}x)".format(conf, uwk/body)
+        return "SELL", "Pin Bar Bearish {}{}(wick {:.1f}x)".format(conf, vol_label, uwk/body)
     if last["close"] > last["open"] and prev["close"] < prev["open"] and last["open"] <= prev["close"] and last["close"] >= prev["open"] and body > prev_body:
-        return "BUY", "Engulfing Bullish ({:.1f}x prev)".format(body/prev_body)
+        return "BUY", "Engulfing Bullish{} ({:.1f}x prev)".format(vol_label, body/prev_body)
     if last["close"] < last["open"] and prev["close"] > prev["open"] and last["open"] >= prev["close"] and last["close"] <= prev["open"] and body > prev_body:
-        return "SELL", "Engulfing Bearish ({:.1f}x prev)".format(body/prev_body)
+        return "SELL", "Engulfing Bearish{} ({:.1f}x prev)".format(vol_label, body/prev_body)
     return "NONE", "Tidak ada konfirmasi candle"
 
 def get_dxy_bias():
@@ -322,11 +387,17 @@ def analyze(df, tf_type, dxy):
         score += 3.0
         if area_ok:
             score += 3.0
+            # Bonus untuk round number atau prev day level
+            if "Round Number" in area_desc or "Prev Day" in area_desc:
+                score += 0.5
         if "kuat" in candle_desc:
             score += 2.0
         elif candle_dir != "NONE":
             score += 1.5
-        score += filters_ok * 1.0
+        # Bonus volume spike
+        if "Vol Spike" in candle_desc:
+            score += 0.5
+        score += filters_ok * 0.5
     score = round(min(score, 10.0), 1)
     wr    = min(50 + int(score * 3.5), 85)
 
