@@ -49,7 +49,7 @@ def log_signal(signal, tf_label, tf_type):
             "tf":        tf_label,
             "tipe":      tf_type,
             "arah":      signal["direction"],
-            "entry":     signal["price"],
+            "entry":     signal.get("entry", signal["price"]),
             "sl":        signal["sl"],
             "tp1":       signal["tp1"],
             "tp2":       signal["tp2"],
