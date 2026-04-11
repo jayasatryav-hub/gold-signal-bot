@@ -330,6 +330,11 @@ def analyze(df, tf_type, dxy):
     filters_ok  = 0
     skip_reason = ""
 
+    # DEBUG LOG
+    print("  [DEBUG] Structure: {} | Candle: {} ({})".format(structure, candle_dir, candle_desc[:30]))
+    print("  [DEBUG] SR valid: {}sup {}res | Price: {:.2f}".format(
+        len(valid_supports), len(valid_resistances), price))
+
     if structure == "NETRAL":
         skip_reason = "Market sideways"
     elif "Late entry" in candle_desc or "Tidak ada pergerakan" in candle_desc:
@@ -359,24 +364,71 @@ def analyze(df, tf_type, dxy):
             skip_reason = "Structure tidak sesuai candle"
 
     if tf_type == "scalping":
-        sl_mult, tp1_mult, tp2_mult = 1.0, 1.5, 2.5
+        sl_mult      = 0.7   # SL lebih ketat
+        retrace_mult = 0.3   # Entry pullback 30% ATR
     else:
-        sl_mult, tp1_mult, tp2_mult = 1.5, 3.0, 5.0
+        sl_mult      = 1.0
+        retrace_mult = 0.4   # Entry pullback 40% ATR
+
+    # Ambil swing points untuk hitung TP berdasarkan S/R berikutnya
+    sh_levels, sl_levels = get_swing_points(df, 100)
 
     if direction == "BUY":
-        sl  = round(price - atr * sl_mult, 2)
-        tp1 = round(price + atr * tp1_mult, 2)
-        tp2 = round(price + atr * tp2_mult, 2)
-    elif direction == "SELL":
-        sl  = round(price + atr * sl_mult, 2)
-        tp1 = round(price - atr * tp1_mult, 2)
-        tp2 = round(price - atr * tp2_mult, 2)
-    else:
-        sl = tp1 = tp2 = price
+        entry = round(price - atr * retrace_mult, 2)
+        sl    = round(entry - atr * sl_mult, 2)
+        sl_distance = entry - sl
 
-    sl_d      = abs(price - sl)
+        # TP1: minimal 1.5x RR, atau S/R resistance terdekat di atas entry
+        tp1_min = round(entry + sl_distance * 1.5, 2)
+        # Cari resistance terdekat di atas entry yang lebih jauh dari tp1_min
+        res_above = [r for r in sh_levels if r > entry + sl_distance]
+        if res_above:
+            nearest_res = min(res_above, key=lambda x: x - entry)
+            tp1 = round(max(tp1_min, nearest_res), 2)
+        else:
+            tp1 = tp1_min
+
+        # TP2: minimal 2x RR, atau S/R resistance berikutnya lebih jauh
+        tp2_min = round(entry + sl_distance * 2.0, 2)
+        res_far = [r for r in sh_levels if r > tp1]
+        if res_far:
+            nearest_far_res = min(res_far, key=lambda x: x - tp1)
+            tp2 = round(max(tp2_min, nearest_far_res), 2)
+        else:
+            tp2 = tp2_min
+
+    elif direction == "SELL":
+        entry = round(price + atr * retrace_mult, 2)
+        sl    = round(entry + atr * sl_mult, 2)
+        sl_distance = sl - entry
+
+        # TP1: minimal 1.5x RR, atau S/R support terdekat di bawah entry
+        tp1_min = round(entry - sl_distance * 1.5, 2)
+        sup_below = [s for s in sl_levels if s < entry - sl_distance]
+        if sup_below:
+            nearest_sup = max(sup_below, key=lambda x: x)
+            tp1 = round(min(tp1_min, nearest_sup), 2)
+        else:
+            tp1 = tp1_min
+
+        # TP2: minimal 2x RR, atau S/R support berikutnya lebih jauh
+        tp2_min = round(entry - sl_distance * 2.0, 2)
+        sup_far = [s for s in sl_levels if s < tp1]
+        if sup_far:
+            nearest_far_sup = max(sup_far, key=lambda x: x)
+            tp2 = round(min(tp2_min, nearest_far_sup), 2)
+        else:
+            tp2 = tp2_min
+
+    else:
+        entry = sl = tp1 = tp2 = price
+        sl_distance = 0
+
+    sl_d      = sl_distance if direction != "WAIT" else 0
     risk_real = round(sl_d, 2)  # 1 poin = $1 untuk 0.01 lot di Bybit TradFi
-    rr        = round(abs(tp1 - price) / sl_d, 1) if sl_d > 0 else 0
+    rr1       = round(abs(tp1 - entry) / sl_d, 1) if sl_d > 0 else 0
+    rr2       = round(abs(tp2 - entry) / sl_d, 1) if sl_d > 0 else 0
+    rr        = rr1
 
     if direction != "WAIT" and rr < MIN_RR:
         skip_reason = "RR 1:{} di bawah minimum 1:{}".format(rr, MIN_RR)
@@ -404,7 +456,10 @@ def analyze(df, tf_type, dxy):
     return {
         "direction":   direction,
         "price":       round(price, 3),
+        "entry":       entry if direction != "WAIT" else round(price, 3),
         "sl":          sl, "tp1": tp1, "tp2": tp2,
+        "rr1":         rr1 if direction != "WAIT" else 0,
+        "rr2":         rr2 if direction != "WAIT" else 0,
         "sl_d":        round(sl_d, 2),
         "risk_real":   risk_real,
         "rr":          rr,
@@ -446,10 +501,11 @@ def buat_pesan(s, tf_label, tf_type):
     if track:
         msg += track
     msg += "\n"
-    msg += "Harga  : ${:,.3f}\n".format(s["price"])
-    msg += "Arah   : {}\n".format(d)
-    msg += "Score  : {}/10\n".format(score)
-    msg += "Est WR : {}%\n".format(wr)
+    entry = s.get("entry", s["price"])
+    msg += "Harga Saat Ini : ${:,.3f}\n".format(s["price"])
+    msg += "Arah           : {}\n".format(d)
+    msg += "Score          : {}/10\n".format(score)
+    msg += "Est WR         : {}%\n".format(wr)
     msg += "\n"
     msg += "=== 3 KOMPONEN WAJIB ===\n"
     msg += "1. Structure : {}\n".format(s["structure"])
@@ -460,13 +516,15 @@ def buat_pesan(s, tf_label, tf_type):
     msg += "4. Session : {}\n".format(sess_str)
     msg += "5. DXY     : {}\n".format(s["dxy_desc"])
     msg += "\n"
-    msg += "=== RENCANA ENTRY ===\n"
-    msg += "Entry     : ${:,.3f}\n".format(s["price"])
-    msg += "TP 1      : ${:,.3f}\n".format(s["tp1"])
-    msg += "TP 2      : ${:,.3f}\n".format(s["tp2"])
-    msg += "Stop Loss : ${:,.3f}\n".format(s["sl"])
+    rr1 = s.get("rr1", s.get("rr", 0))
+    rr2 = s.get("rr2", 0)
+    msg += "=== RENCANA ENTRY TERBAIK ===\n"
+    msg += "Entry Ideal : ${:,.3f}\n".format(entry)
+    msg += "TP 1 (RR 1:{}) : ${:,.3f}\n".format(rr1, s["tp1"])
+    msg += "TP 2 (RR 1:{}) : ${:,.3f}\n".format(rr2, s["tp2"])
+    msg += "Stop Loss   : ${:,.3f}\n".format(s["sl"])
     msg += "\n"
-    msg += "Risk: ${:.2f} | Lot: {} | RR: 1:{} | ATR: ${:.2f}\n".format(s["risk_real"], s["lot"], s["rr"], s["atr"])
+    msg += "Risk: ${:.2f} | Lot: {} | ATR: ${:.2f}\n".format(s["risk_real"], s["lot"], s["atr"])
     msg += "RSI: {}\n".format(s["rsi"])
     msg += "\n"
     msg += "Entry jika Score 8+ dan WR 75%+\n"
