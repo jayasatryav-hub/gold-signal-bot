@@ -722,6 +722,79 @@ def handle_log():
     except Exception as e:
         kirim_telegram("Error baca log: {}".format(e))
 
+def handle_update(text):
+    """
+    Update hasil trade dari Telegram.
+    Format: /update <id> <hasil>
+    Contoh: /update 1 WIN_TP1
+    Hasil valid: WIN_TP1, WIN_TP2, LOSS, BE
+    """
+    try:
+        parts = text.strip().split()
+        if len(parts) != 3:
+            kirim_telegram(
+                "Format salah!\n"
+                "Gunakan: /update <id> <hasil>\n"
+                "Contoh: /update 1 WIN_TP1\n\n"
+                "Hasil valid:\n"
+                "WIN_TP1 - Profit di TP1\n"
+                "WIN_TP2 - Profit di TP2\n"
+                "LOSS    - Kena Stop Loss\n"
+                "BE      - Breakeven"
+            )
+            return
+
+        signal_id = int(parts[1])
+        hasil     = parts[2].upper()
+
+        if hasil not in ["WIN_TP1", "WIN_TP2", "LOSS", "BE"]:
+            kirim_telegram(
+                "Hasil tidak valid!\n"
+                "Gunakan: WIN_TP1 / WIN_TP2 / LOSS / BE"
+            )
+            return
+
+        if not os.path.exists(LOG_FILE):
+            kirim_telegram("Belum ada sinyal yang tercatat.")
+            return
+
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        found = False
+        for log in logs:
+            if log["id"] == signal_id:
+                old_result    = log["result"]
+                log["result"] = hasil
+                found         = True
+                break
+
+        if not found:
+            kirim_telegram("Sinyal #{} tidak ditemukan.".format(signal_id))
+            return
+
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=2)
+
+        emoji = "WIN" if hasil.startswith("WIN") else ("BE" if hasil == "BE" else "LOSS")
+        msg  = "Sinyal #{} diupdate!\n".format(signal_id)
+        msg += "Hasil: {} -> {}\n\n".format(old_result, hasil)
+
+        # Tampilkan statistik terbaru
+        stats = get_trade_summary()
+        if stats and stats["closed"] > 0:
+            msg += "=== STATISTIK TERBARU ===\n"
+            msg += "Win : {} | Loss : {} | BE : {}\n".format(
+                stats["wins"], stats["losses"], stats["be"])
+            msg += "WR  : {}% ({} trade)".format(stats["wr"], stats["closed"])
+
+        kirim_telegram(msg)
+
+    except ValueError:
+        kirim_telegram("ID harus berupa angka. Contoh: /update 1 WIN_TP1")
+    except Exception as e:
+        kirim_telegram("Error update: {}".format(e))
+
 last_update_id = 0
 
 def process_commands():
@@ -741,18 +814,24 @@ def process_commands():
             handle_stats()
         elif text == "/log":
             handle_log()
+        elif text.startswith("/update"):
+            handle_update(text)
         elif text == "/start":
             kirim_telegram(buat_pesan_startup())
         elif text == "/help":
             msg  = "=== COMMAND BOT ===\n"
-            msg += "/stats - Statistik performa bot\n"
-            msg += "/log   - 10 sinyal terakhir\n"
-            msg += "/start - Info bot\n"
-            msg += "/help  - Bantuan\n"
+            msg += "/stats               - Statistik WR\n"
+            msg += "/log                 - 10 sinyal terakhir\n"
+            msg += "/update <id> <hasil> - Update hasil trade\n"
+            msg += "/start               - Info bot\n"
+            msg += "/help                - Bantuan\n"
             msg += "\n"
-            msg += "Update hasil trade:\n"
-            msg += "Buka trade_log.json di Railway\n"
-            msg += "Ganti PENDING ke:\n"
+            msg += "Contoh update:\n"
+            msg += "/update 1 WIN_TP1\n"
+            msg += "/update 2 LOSS\n"
+            msg += "/update 3 BE\n"
+            msg += "\n"
+            msg += "Hasil valid:\n"
             msg += "WIN_TP1 / WIN_TP2 / LOSS / BE"
             kirim_telegram(msg)
         set_offset(last_update_id + 1)
