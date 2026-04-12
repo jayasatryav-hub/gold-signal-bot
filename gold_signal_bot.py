@@ -364,23 +364,20 @@ def analyze(df, tf_type, dxy):
             skip_reason = "Structure tidak sesuai candle"
 
     if tf_type == "scalping":
-        sl_mult      = 0.7   # SL lebih ketat
-        retrace_mult = 0.3   # Entry pullback 30% ATR
+        sl_mult = 1.0
     else:
-        sl_mult      = 1.0
-        retrace_mult = 0.4   # Entry pullback 40% ATR
+        sl_mult = 1.5
 
     # Ambil swing points untuk hitung TP berdasarkan S/R berikutnya
     sh_levels, sl_levels = get_swing_points(df, 100)
 
     if direction == "BUY":
-        entry = round(price - atr * retrace_mult, 2)
+        entry = price  # Entry langsung di market price
         sl    = round(entry - atr * sl_mult, 2)
         sl_distance = entry - sl
 
-        # TP1: minimal 1.5x RR, atau S/R resistance terdekat di atas entry
+        # TP1: minimal 1.5x RR, atau S/R resistance terdekat
         tp1_min = round(entry + sl_distance * 1.5, 2)
-        # Cari resistance terdekat di atas entry yang lebih jauh dari tp1_min
         res_above = [r for r in sh_levels if r > entry + sl_distance]
         if res_above:
             nearest_res = min(res_above, key=lambda x: x - entry)
@@ -388,7 +385,7 @@ def analyze(df, tf_type, dxy):
         else:
             tp1 = tp1_min
 
-        # TP2: minimal 2x RR, atau S/R resistance berikutnya lebih jauh
+        # TP2: minimal 2x RR, atau S/R resistance berikutnya
         tp2_min = round(entry + sl_distance * 2.0, 2)
         res_far = [r for r in sh_levels if r > tp1]
         if res_far:
@@ -398,11 +395,11 @@ def analyze(df, tf_type, dxy):
             tp2 = tp2_min
 
     elif direction == "SELL":
-        entry = round(price + atr * retrace_mult, 2)
+        entry = price  # Entry langsung di market price
         sl    = round(entry + atr * sl_mult, 2)
         sl_distance = sl - entry
 
-        # TP1: minimal 1.5x RR, atau S/R support terdekat di bawah entry
+        # TP1: minimal 1.5x RR, atau S/R support terdekat
         tp1_min = round(entry - sl_distance * 1.5, 2)
         sup_below = [s for s in sl_levels if s < entry - sl_distance]
         if sup_below:
@@ -411,7 +408,7 @@ def analyze(df, tf_type, dxy):
         else:
             tp1 = tp1_min
 
-        # TP2: minimal 2x RR, atau S/R support berikutnya lebih jauh
+        # TP2: minimal 2x RR, atau S/R support berikutnya
         tp2_min = round(entry - sl_distance * 2.0, 2)
         sup_far = [s for s in sl_levels if s < tp1]
         if sup_far:
@@ -421,7 +418,8 @@ def analyze(df, tf_type, dxy):
             tp2 = tp2_min
 
     else:
-        entry = sl = tp1 = tp2 = price
+        entry = price
+        sl = tp1 = tp2 = price
         sl_distance = 0
 
     sl_d      = sl_distance if direction != "WAIT" else 0
@@ -519,7 +517,7 @@ def buat_pesan(s, tf_label, tf_type):
     rr1 = s.get("rr1", s.get("rr", 0))
     rr2 = s.get("rr2", 0)
     msg += "=== RENCANA ENTRY TERBAIK ===\n"
-    msg += "Entry Ideal : ${:,.3f}\n".format(entry)
+    msg += "Entry       : ${:,.3f}\n".format(entry)
     msg += "TP 1 (RR 1:{}) : ${:,.3f}\n".format(rr1, s["tp1"])
     msg += "TP 2 (RR 1:{}) : ${:,.3f}\n".format(rr2, s["tp2"])
     msg += "Stop Loss   : ${:,.3f}\n".format(s["sl"])
