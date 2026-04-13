@@ -168,146 +168,144 @@ def get_recent_swing_high(df, lookback=20):
     return swing_highs[-1] if swing_highs else None
 
 
-def calc_smart_sl(direction, entry, atr, valid_supports, valid_resistances, candle_desc, df):
+def calc_smart_sl(direction, entry, atr, valid_supports, valid_resistances, candle_desc, df, tf_type="scalping"):
     """
-    Optimal SL v2 — Prioritas: Structure → S/R Zone → Wick → ATR fallback
+    Optimal SL v3 — Tidak terlalu ketat, tetap berbasis struktur.
+
+    PERUBAHAN v3:
+    - MAX_SL_DIST dibedakan per TF: scalping=2.0 ATR, swing=3.0 ATR
+    - MIN_SL_DIST dilonggarkan: 0.3 ATR (sebelumnya 0.5)
+    - Jika swing_low terlalu jauh → TIDAK langsung skip, turun ke sr_zone atau wick
+    - Jika semua kandidat terlalu jauh → fallback ke 1.5 ATR (bukan langsung skip)
+    - TERLALU_JAUH hanya jika bahkan fallback pun masih > MAX_SL_DIST
 
     URUTAN PRIORITAS BUY:
-    1. Swing Low terakhir (recent HL) → paling relevan untuk invalidasi BUY
-    2. S/R support zone_low → zona institusional di bawah entry
-    3. Wick low candle → hanya dipakai jika lebih rendah dari pilihan 1 & 2
-    4. ATR fallback → jika tidak ada referensi struktur sama sekali
+    1. Swing Low terakhir (20 candle) — jika dalam batas MAX
+    2. S/R support zone_low terdekat  — jika dalam batas MAX
+    3. Wick low candle saat ini        — jika dalam batas MAX
+    4. ATR fallback 1.5x               — last resort, selalu dalam batas
 
     URUTAN PRIORITAS SELL:
-    1. Swing High terakhir (recent LH) → paling relevan untuk invalidasi SELL
-    2. S/R resistance zone_high → zona institusional di atas entry
-    3. Wick high candle → hanya dipakai jika lebih tinggi dari pilihan 1 & 2
-    4. ATR fallback → jika tidak ada referensi struktur sama sekali
-
-    PEMILIHAN LEVEL:
-    - Ambil level PALING RELEVAN (terdekat dari entry, masih di luar noise)
-    - Bukan level terjauh — SL tidak perlu sangat konservatif, hanya perlu valid
-    - Tambahkan adaptive buffer agar tidak kena wick sesaat
-
-    BATAS:
-    - MIN: 0.5 ATR dari entry → hindari SL di dalam noise
-    - MAX: 2.0 ATR dari entry → jika lebih jauh, skip trade (risk terlalu besar)
+    1. Swing High terakhir (20 candle)
+    2. S/R resistance zone_high terdekat
+    3. Wick high candle saat ini
+    4. ATR fallback 1.5x
     """
     last      = df.iloc[-1]
     wick_low  = last["low"]
     wick_high = last["high"]
 
-    buffer       = calc_adaptive_buffer(df, atr)
-    MIN_SL_DIST  = atr * 0.5   # terlalu dekat = noise
-    MAX_SL_DIST  = atr * 2.0   # terlalu jauh = skip
+    buffer = calc_adaptive_buffer(df, atr)
+
+    # MAX berbeda per timeframe
+    if tf_type == "scalping":
+        MAX_SL_DIST = atr * 2.0   # M15+H1: lebih ketat
+    else:
+        MAX_SL_DIST = atr * 3.0   # H4+D1: lebih longgar karena swing lebih jauh
+
+    MIN_SL_DIST = atr * 0.3       # dilonggarkan dari 0.5 → 0.3
 
     sl       = None
-    sl_basis = "ATR fallback"
+    sl_basis = "ATR_fallback"
 
     if direction == "BUY":
-        # --- Kumpulkan kandidat level invalidasi ---
-        # Prioritas 1: Recent Swing Low (HL terakhir dalam 20 candle)
         swing_low = get_recent_swing_low(df, lookback=20)
 
-        # Prioritas 2: S/R support zone_low terdekat di bawah entry
         sr_low = None
         for sup in sorted(valid_supports, key=lambda x: x["zone_low"], reverse=True):
             if sup["zone_low"] < entry:
                 sr_low = sup["zone_low"]
                 break
 
-        # Kumpulkan hanya level yang masih dalam batas MAX_SL_DIST
-        candidates = {}
+        # Cari kandidat terbaik secara berurutan — ambil yang PERTAMA lolos batas
+        anchor = None
+        basis  = ""
+
+        # Prioritas 1: swing low (jika masih dalam MAX)
         if swing_low and swing_low < entry and (entry - swing_low) <= MAX_SL_DIST:
-            candidates["swing_low"] = swing_low
-        if sr_low and (entry - sr_low) <= MAX_SL_DIST:
-            candidates["sr_zone"]   = sr_low
-        # Prioritas 3: Wick low — hanya jika lebih rendah dari kandidat lain
-        if wick_low < entry and (entry - wick_low) <= MAX_SL_DIST:
-            candidates["wick_low"]  = wick_low
+            anchor = swing_low
+            basis  = "swing_low"
 
-        if candidates:
-            # Pilih level yang PALING DEKAT ke entry (bukan paling jauh)
-            # Rasional: level terdekat yang masih di luar noise = invalidasi paling tepat
-            # Jika swing_low ada → prioritaskan swing_low sebagai anchor utama
-            if "swing_low" in candidates:
-                anchor = candidates["swing_low"]
-                basis  = "swing_low"
-            elif "sr_zone" in candidates:
-                anchor = candidates["sr_zone"]
-                basis  = "sr_zone"
-            else:
-                anchor = candidates["wick_low"]
-                basis  = "wick_low"
+        # Prioritas 2: sr_zone (jika swing terlalu jauh atau tidak ada)
+        if anchor is None and sr_low and (entry - sr_low) <= MAX_SL_DIST:
+            anchor = sr_low
+            basis  = "sr_zone"
 
-            # Jika wick lebih rendah dari anchor → pakai wick (lebih ekstrem, lebih aman)
-            if "wick_low" in candidates and candidates["wick_low"] < anchor:
-                anchor = candidates["wick_low"]
+        # Prioritas 3: wick low
+        if anchor is None and wick_low < entry and (entry - wick_low) <= MAX_SL_DIST:
+            anchor = wick_low
+            basis  = "wick_low"
+
+        # Jika swing ada tapi sr/wick lebih rendah dan masih valid → pakai yang lebih rendah
+        if anchor is not None:
+            if sr_low and sr_low < anchor and (entry - sr_low) <= MAX_SL_DIST:
+                anchor = sr_low
+                basis  = basis + "+sr_zone"
+            if wick_low < anchor and (entry - wick_low) <= MAX_SL_DIST:
+                anchor = wick_low
                 basis  = basis + "+wick_low"
 
             sl       = round(anchor - buffer, 2)
             sl_basis = basis
-
         else:
-            # Fallback ATR jika tidak ada referensi struktur sama sekali
-            sl       = round(entry - atr * 1.0, 2)
-            sl_basis = "ATR_fallback"
+            # Fallback: 1.5 ATR — selalu dalam batas, tidak pernah skip
+            sl       = round(entry - atr * 1.5, 2)
+            sl_basis = "ATR_fallback_1.5"
 
-        # --- Clamp ke batas min/max ---
+        # Clamp minimum saja — tidak clamp maximum (biarkan lolos, cek di analyze)
         sl_dist = entry - sl
         if sl_dist < MIN_SL_DIST:
             sl       = round(entry - MIN_SL_DIST, 2)
             sl_basis += "|min_adj"
-        elif sl_dist > MAX_SL_DIST:
-            # SL terlalu jauh → tandai agar di-skip di analyze()
+
+        # Tandai TERLALU_JAUH hanya jika benar-benar melebihi MAX
+        if entry - sl > MAX_SL_DIST:
             sl_basis += "|TERLALU_JAUH"
 
     elif direction == "SELL":
-        # Prioritas 1: Recent Swing High (LH terakhir dalam 20 candle)
         swing_high = get_recent_swing_high(df, lookback=20)
 
-        # Prioritas 2: S/R resistance zone_high terdekat di atas entry
         sr_high = None
         for res in sorted(valid_resistances, key=lambda x: x["zone_high"]):
             if res["zone_high"] > entry:
                 sr_high = res["zone_high"]
                 break
 
-        candidates = {}
+        anchor = None
+        basis  = ""
+
         if swing_high and swing_high > entry and (swing_high - entry) <= MAX_SL_DIST:
-            candidates["swing_high"] = swing_high
-        if sr_high and (sr_high - entry) <= MAX_SL_DIST:
-            candidates["sr_zone"]    = sr_high
-        if wick_high > entry and (wick_high - entry) <= MAX_SL_DIST:
-            candidates["wick_high"]  = wick_high
+            anchor = swing_high
+            basis  = "swing_high"
 
-        if candidates:
-            if "swing_high" in candidates:
-                anchor = candidates["swing_high"]
-                basis  = "swing_high"
-            elif "sr_zone" in candidates:
-                anchor = candidates["sr_zone"]
-                basis  = "sr_zone"
-            else:
-                anchor = candidates["wick_high"]
-                basis  = "wick_high"
+        if anchor is None and sr_high and (sr_high - entry) <= MAX_SL_DIST:
+            anchor = sr_high
+            basis  = "sr_zone"
 
-            if "wick_high" in candidates and candidates["wick_high"] > anchor:
-                anchor = candidates["wick_high"]
+        if anchor is None and wick_high > entry and (wick_high - entry) <= MAX_SL_DIST:
+            anchor = wick_high
+            basis  = "wick_high"
+
+        if anchor is not None:
+            if sr_high and sr_high > anchor and (sr_high - entry) <= MAX_SL_DIST:
+                anchor = sr_high
+                basis  = basis + "+sr_zone"
+            if wick_high > anchor and (wick_high - entry) <= MAX_SL_DIST:
+                anchor = wick_high
                 basis  = basis + "+wick_high"
 
             sl       = round(anchor + buffer, 2)
             sl_basis = basis
-
         else:
-            sl       = round(entry + atr * 1.0, 2)
-            sl_basis = "ATR_fallback"
+            sl       = round(entry + atr * 1.5, 2)
+            sl_basis = "ATR_fallback_1.5"
 
         sl_dist = sl - entry
         if sl_dist < MIN_SL_DIST:
             sl       = round(entry + MIN_SL_DIST, 2)
             sl_basis += "|min_adj"
-        elif sl_dist > MAX_SL_DIST:
+
+        if sl - entry > MAX_SL_DIST:
             sl_basis += "|TERLALU_JAUH"
 
     return sl, sl_basis
@@ -567,7 +565,7 @@ def analyze(df, tf_type, dxy):
 
     if direction == "BUY":
         entry = price  # Entry langsung di market price
-        sl, sl_basis = calc_smart_sl("BUY", entry, atr, valid_supports, valid_resistances, candle_desc, df)
+        sl, sl_basis = calc_smart_sl("BUY", entry, atr, valid_supports, valid_resistances, candle_desc, df, tf_type)
         sl_distance = entry - sl
         print("  [SL] BUY | basis: {} | SL: {:.2f} | dist: {:.2f}".format(sl_basis, sl, sl_distance))
 
@@ -591,7 +589,7 @@ def analyze(df, tf_type, dxy):
 
     elif direction == "SELL":
         entry = price  # Entry langsung di market price
-        sl, sl_basis = calc_smart_sl("SELL", entry, atr, valid_supports, valid_resistances, candle_desc, df)
+        sl, sl_basis = calc_smart_sl("SELL", entry, atr, valid_supports, valid_resistances, candle_desc, df, tf_type)
         sl_distance = sl - entry
         print("  [SL] SELL | basis: {} | SL: {:.2f} | dist: {:.2f}".format(sl_basis, sl, sl_distance))
 
