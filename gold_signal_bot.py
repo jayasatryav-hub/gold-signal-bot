@@ -114,6 +114,205 @@ def calc_rsi(s, n=14):
     l = (-d.clip(upper=0)).rolling(n).mean()
     return 100 - 100 / (1 + g / l.replace(0, np.nan))
 
+def calc_adaptive_buffer(df, atr):
+    """
+    Buffer adaptif: makin volatil market → buffer makin besar.
+    Ukur volatilitas relatif: ATR saat ini vs rata-rata ATR 20 candle terakhir.
+    - ATR tinggi (>1.3x avg) → volatil → buffer 25% ATR
+    - ATR normal (0.8–1.3x)  → normal  → buffer 15% ATR
+    - ATR rendah (<0.8x avg) → tenang  → buffer 8% ATR
+    """
+    atr_series = calc_atr(df, 14)
+    avg_atr    = atr_series.tail(20).mean()
+    if avg_atr == 0:
+        return atr * 0.15  # fallback default
+
+    ratio = atr / avg_atr
+    if ratio > 1.3:
+        buf_ratio = 0.25   # market volatil → buffer lebih besar
+    elif ratio < 0.8:
+        buf_ratio = 0.08   # market tenang → buffer kecil
+    else:
+        buf_ratio = 0.15   # kondisi normal
+    return atr * buf_ratio
+
+
+def get_recent_swing_low(df, lookback=20):
+    """
+    Swing low terakhir yang relevan untuk BUY setup (Higher Low / HL).
+    Scan mundur dari candle terakhir, ambil low terendah dari 3 candle berturut
+    yang lebih rendah dari tetangganya.
+    Lookback pendek (20) agar swing yang diambil masih relevan terhadap setup saat ini.
+    """
+    recent = df.tail(lookback)
+    lows   = recent["low"].values
+    # Cari swing low: lows[i] < lows[i-1] dan lows[i] < lows[i+1]
+    swing_lows = []
+    for i in range(1, len(lows) - 1):
+        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]:
+            swing_lows.append(lows[i])
+    # Ambil yang paling baru (paling kanan = index tertinggi di list)
+    return swing_lows[-1] if swing_lows else None
+
+
+def get_recent_swing_high(df, lookback=20):
+    """
+    Swing high terakhir yang relevan untuk SELL setup (Lower High / LH).
+    """
+    recent = df.tail(lookback)
+    highs  = recent["high"].values
+    swing_highs = []
+    for i in range(1, len(highs) - 1):
+        if highs[i] > highs[i - 1] and highs[i] > highs[i + 1]:
+            swing_highs.append(highs[i])
+    return swing_highs[-1] if swing_highs else None
+
+
+def calc_smart_sl(direction, entry, atr, valid_supports, valid_resistances, candle_desc, df):
+    """
+    Optimal SL v2 — Prioritas: Structure → S/R Zone → Wick → ATR fallback
+
+    URUTAN PRIORITAS BUY:
+    1. Swing Low terakhir (recent HL) → paling relevan untuk invalidasi BUY
+    2. S/R support zone_low → zona institusional di bawah entry
+    3. Wick low candle → hanya dipakai jika lebih rendah dari pilihan 1 & 2
+    4. ATR fallback → jika tidak ada referensi struktur sama sekali
+
+    URUTAN PRIORITAS SELL:
+    1. Swing High terakhir (recent LH) → paling relevan untuk invalidasi SELL
+    2. S/R resistance zone_high → zona institusional di atas entry
+    3. Wick high candle → hanya dipakai jika lebih tinggi dari pilihan 1 & 2
+    4. ATR fallback → jika tidak ada referensi struktur sama sekali
+
+    PEMILIHAN LEVEL:
+    - Ambil level PALING RELEVAN (terdekat dari entry, masih di luar noise)
+    - Bukan level terjauh — SL tidak perlu sangat konservatif, hanya perlu valid
+    - Tambahkan adaptive buffer agar tidak kena wick sesaat
+
+    BATAS:
+    - MIN: 0.5 ATR dari entry → hindari SL di dalam noise
+    - MAX: 2.0 ATR dari entry → jika lebih jauh, skip trade (risk terlalu besar)
+    """
+    last      = df.iloc[-1]
+    wick_low  = last["low"]
+    wick_high = last["high"]
+
+    buffer       = calc_adaptive_buffer(df, atr)
+    MIN_SL_DIST  = atr * 0.5   # terlalu dekat = noise
+    MAX_SL_DIST  = atr * 2.0   # terlalu jauh = skip
+
+    sl       = None
+    sl_basis = "ATR fallback"
+
+    if direction == "BUY":
+        # --- Kumpulkan kandidat level invalidasi ---
+        # Prioritas 1: Recent Swing Low (HL terakhir dalam 20 candle)
+        swing_low = get_recent_swing_low(df, lookback=20)
+
+        # Prioritas 2: S/R support zone_low terdekat di bawah entry
+        sr_low = None
+        for sup in sorted(valid_supports, key=lambda x: x["zone_low"], reverse=True):
+            if sup["zone_low"] < entry:
+                sr_low = sup["zone_low"]
+                break
+
+        # Kumpulkan hanya level yang masih dalam batas MAX_SL_DIST
+        candidates = {}
+        if swing_low and swing_low < entry and (entry - swing_low) <= MAX_SL_DIST:
+            candidates["swing_low"] = swing_low
+        if sr_low and (entry - sr_low) <= MAX_SL_DIST:
+            candidates["sr_zone"]   = sr_low
+        # Prioritas 3: Wick low — hanya jika lebih rendah dari kandidat lain
+        if wick_low < entry and (entry - wick_low) <= MAX_SL_DIST:
+            candidates["wick_low"]  = wick_low
+
+        if candidates:
+            # Pilih level yang PALING DEKAT ke entry (bukan paling jauh)
+            # Rasional: level terdekat yang masih di luar noise = invalidasi paling tepat
+            # Jika swing_low ada → prioritaskan swing_low sebagai anchor utama
+            if "swing_low" in candidates:
+                anchor = candidates["swing_low"]
+                basis  = "swing_low"
+            elif "sr_zone" in candidates:
+                anchor = candidates["sr_zone"]
+                basis  = "sr_zone"
+            else:
+                anchor = candidates["wick_low"]
+                basis  = "wick_low"
+
+            # Jika wick lebih rendah dari anchor → pakai wick (lebih ekstrem, lebih aman)
+            if "wick_low" in candidates and candidates["wick_low"] < anchor:
+                anchor = candidates["wick_low"]
+                basis  = basis + "+wick_low"
+
+            sl       = round(anchor - buffer, 2)
+            sl_basis = basis
+
+        else:
+            # Fallback ATR jika tidak ada referensi struktur sama sekali
+            sl       = round(entry - atr * 1.0, 2)
+            sl_basis = "ATR_fallback"
+
+        # --- Clamp ke batas min/max ---
+        sl_dist = entry - sl
+        if sl_dist < MIN_SL_DIST:
+            sl       = round(entry - MIN_SL_DIST, 2)
+            sl_basis += "|min_adj"
+        elif sl_dist > MAX_SL_DIST:
+            # SL terlalu jauh → tandai agar di-skip di analyze()
+            sl_basis += "|TERLALU_JAUH"
+
+    elif direction == "SELL":
+        # Prioritas 1: Recent Swing High (LH terakhir dalam 20 candle)
+        swing_high = get_recent_swing_high(df, lookback=20)
+
+        # Prioritas 2: S/R resistance zone_high terdekat di atas entry
+        sr_high = None
+        for res in sorted(valid_resistances, key=lambda x: x["zone_high"]):
+            if res["zone_high"] > entry:
+                sr_high = res["zone_high"]
+                break
+
+        candidates = {}
+        if swing_high and swing_high > entry and (swing_high - entry) <= MAX_SL_DIST:
+            candidates["swing_high"] = swing_high
+        if sr_high and (sr_high - entry) <= MAX_SL_DIST:
+            candidates["sr_zone"]    = sr_high
+        if wick_high > entry and (wick_high - entry) <= MAX_SL_DIST:
+            candidates["wick_high"]  = wick_high
+
+        if candidates:
+            if "swing_high" in candidates:
+                anchor = candidates["swing_high"]
+                basis  = "swing_high"
+            elif "sr_zone" in candidates:
+                anchor = candidates["sr_zone"]
+                basis  = "sr_zone"
+            else:
+                anchor = candidates["wick_high"]
+                basis  = "wick_high"
+
+            if "wick_high" in candidates and candidates["wick_high"] > anchor:
+                anchor = candidates["wick_high"]
+                basis  = basis + "+wick_high"
+
+            sl       = round(anchor + buffer, 2)
+            sl_basis = basis
+
+        else:
+            sl       = round(entry + atr * 1.0, 2)
+            sl_basis = "ATR_fallback"
+
+        sl_dist = sl - entry
+        if sl_dist < MIN_SL_DIST:
+            sl       = round(entry + MIN_SL_DIST, 2)
+            sl_basis += "|min_adj"
+        elif sl_dist > MAX_SL_DIST:
+            sl_basis += "|TERLALU_JAUH"
+
+    return sl, sl_basis
+
+
 def get_swing_points(df, lookback=60):
     recent = df.tail(lookback)
     highs  = recent["high"].values
@@ -363,18 +562,14 @@ def analyze(df, tf_type, dxy):
         else:
             skip_reason = "Structure tidak sesuai candle"
 
-    if tf_type == "scalping":
-        sl_mult = 1.0
-    else:
-        sl_mult = 1.5
-
     # Ambil swing points untuk hitung TP berdasarkan S/R berikutnya
     sh_levels, sl_levels = get_swing_points(df, 100)
 
     if direction == "BUY":
         entry = price  # Entry langsung di market price
-        sl    = round(entry - atr * sl_mult, 2)
+        sl, sl_basis = calc_smart_sl("BUY", entry, atr, valid_supports, valid_resistances, candle_desc, df)
         sl_distance = entry - sl
+        print("  [SL] BUY | basis: {} | SL: {:.2f} | dist: {:.2f}".format(sl_basis, sl, sl_distance))
 
         # TP1: minimal 1.5x RR, atau S/R resistance terdekat
         tp1_min = round(entry + sl_distance * 1.5, 2)
@@ -396,8 +591,9 @@ def analyze(df, tf_type, dxy):
 
     elif direction == "SELL":
         entry = price  # Entry langsung di market price
-        sl    = round(entry + atr * sl_mult, 2)
+        sl, sl_basis = calc_smart_sl("SELL", entry, atr, valid_supports, valid_resistances, candle_desc, df)
         sl_distance = sl - entry
+        print("  [SL] SELL | basis: {} | SL: {:.2f} | dist: {:.2f}".format(sl_basis, sl, sl_distance))
 
         # TP1: minimal 1.5x RR, atau S/R support terdekat
         tp1_min = round(entry - sl_distance * 1.5, 2)
@@ -427,6 +623,16 @@ def analyze(df, tf_type, dxy):
     rr1       = round(abs(tp1 - entry) / sl_d, 1) if sl_d > 0 else 0
     rr2       = round(abs(tp2 - entry) / sl_d, 1) if sl_d > 0 else 0
     rr        = rr1
+
+    # Skip jika SL terlalu kecil (noise filter) - kurang dari 0.5 ATR
+    if direction != "WAIT" and sl_d < atr * 0.5:
+        skip_reason = "SL terlalu kecil ({:.2f} < 0.5 ATR={:.2f}) - noise tinggi".format(sl_d, atr * 0.5)
+        direction   = "WAIT"
+
+    # Skip jika SL terlalu jauh (ditandai oleh calc_smart_sl)
+    if direction != "WAIT" and "TERLALU_JAUH" in sl_basis:
+        skip_reason = "SL terlalu jauh (>{:.2f} = 2.0 ATR) - risk terlalu besar, skip trade".format(atr * 2.0)
+        direction   = "WAIT"
 
     if direction != "WAIT" and rr < MIN_RR:
         skip_reason = "RR 1:{} di bawah minimum 1:{}".format(rr, MIN_RR)
